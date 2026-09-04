@@ -195,19 +195,25 @@ uint16_t ragnar_crc16_ccitt(const uint8_t *data, size_t len) {
 
 void setup() {
   Serial.begin(SERIAL_BAUD);
-  delay(250);
+  delay(1000);
+  Serial.println();
+  Serial.println("ragnar-link-gateway: boot");
 
+  Serial.println("ragnar-link-gateway: init display");
   tft.init();
   tft.setRotation(0);
   pinMode(TFT_BL, OUTPUT);
   digitalWrite(TFT_BL, TFT_BACKLIGHT_ON);
 
+  Serial.println("ragnar-link-gateway: init esp-now");
   configure_espnow(espnow_channel);
   last_status.magic[0] = 'R';
   last_status.magic[1] = 'L';
   last_status.version = RAGNAR_LINK_VERSION;
   last_status.type = RAGNAR_LINK_FRAME_STATUS;
+  Serial.println("ragnar-link-gateway: draw display");
   draw_status();
+  Serial.println("ragnar-link-gateway: ready");
   emit_json("hello", 0, "ready", "ragnar-espnow-gateway");
 }
 
@@ -232,4 +238,3 @@ void loop() {
     last_display_ms = millis();
   }
 }
-

@@ -30,6 +30,16 @@ Serial monitor:
 pio device monitor -b 115200
 ```
 
+If the monitor shows repeated `rst:0x3 (RTC_SW_SYS_RST)` boot messages and never prints `ragnar-link-gateway: boot`, erase the flash once and upload again:
+
+```sh
+pio run -t erase
+pio run -t upload
+pio device monitor -b 115200
+```
+
+If it prints `ragnar-link-gateway: boot` and then resets, the last breadcrumb line printed before reset tells us which subsystem is failing.
+
 ## Hardware Target
 
 This repo is configured for the regular `ESP32-S3-LCD-1.47` pinout:
@@ -48,4 +58,3 @@ The `ESP32-S3-LCD-1.47B` board uses `GPIO46` for LCD backlight. If you later dis
 ## Protocol
 
 The ESP-NOW packet contract is documented in [docs/espnow-protocol.md](docs/espnow-protocol.md). IRIS should treat that file and the matching host-side docs in `ragnar-link` as the v1 source of truth.
-
