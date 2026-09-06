@@ -16,12 +16,24 @@ Install PlatformIO, then:
 pio run
 ```
 
+There is also a no-display diagnostic build. Use it only to prove that display init is the reset source:
+
+```sh
+pio run -e waveshare_esp32_s3_lcd_147_no_display
+```
+
 ## Flash
 
 Plug the Waveshare ESP32-S3-LCD-1.47 into USB, then:
 
 ```sh
 pio run -t upload
+```
+
+No-display diagnostic upload:
+
+```sh
+pio run -e waveshare_esp32_s3_lcd_147_no_display -t upload
 ```
 
 Serial monitor:
@@ -38,7 +50,7 @@ pio run -t upload
 pio device monitor -b 115200
 ```
 
-If it prints `ragnar-link-gateway: boot` and then resets, the last breadcrumb line printed before reset tells us which subsystem is failing.
+If it prints `ragnar-link-gateway: boot` and then resets after `init display`, try the no-display diagnostic upload. If the no-display build stays up, the problem is definitely in the TFT driver setup.
 
 ## Hardware Target
 

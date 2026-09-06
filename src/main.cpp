@@ -1,11 +1,18 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
-#include <TFT_eSPI.h>
 #include <WiFi.h>
 #include <esp_now.h>
 #include <esp_wifi.h>
 
 #include "ragnar_link_protocol.h"
+
+#ifndef RAGNAR_GATEWAY_DISPLAY
+#define RAGNAR_GATEWAY_DISPLAY 1
+#endif
+
+#if RAGNAR_GATEWAY_DISPLAY
+#include <TFT_eSPI.h>
+#endif
 
 namespace {
 constexpr uint32_t SERIAL_BAUD = 115200;
@@ -13,7 +20,9 @@ constexpr uint8_t DEFAULT_CHANNEL = 6;
 constexpr uint32_t HOST_TIMEOUT_MS = 15000;
 constexpr uint32_t DISPLAY_REFRESH_MS = 500;
 
+#if RAGNAR_GATEWAY_DISPLAY
 TFT_eSPI tft;
+#endif
 uint8_t espnow_channel = DEFAULT_CHANNEL;
 uint32_t tx_sequence = 0;
 uint32_t last_host_ms = 0;
@@ -61,6 +70,7 @@ void emit_json(const char *type, uint32_t seq, const char *status, const char *m
 }
 
 void draw_status() {
+#if RAGNAR_GATEWAY_DISPLAY
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_GREEN, TFT_BLACK);
   tft.setTextSize(2);
@@ -92,6 +102,7 @@ void draw_status() {
   tft.setTextColor(TFT_YELLOW, TFT_BLACK);
   tft.setCursor(8, 190);
   tft.print(last_message.substring(0, 24));
+#endif
 }
 
 void configure_espnow(uint8_t channel) {
@@ -199,11 +210,16 @@ void setup() {
   Serial.println();
   Serial.println("ragnar-link-gateway: boot");
 
+#if RAGNAR_GATEWAY_DISPLAY
   Serial.println("ragnar-link-gateway: init display");
   tft.init();
   tft.setRotation(0);
-  pinMode(TFT_BL, OUTPUT);
-  digitalWrite(TFT_BL, TFT_BACKLIGHT_ON);
+  tft.fillScreen(TFT_BLACK);
+  tft.setTextColor(TFT_WHITE, TFT_BLACK);
+  tft.drawString("Starting...", 8, 8, 2);
+#else
+  Serial.println("ragnar-link-gateway: display disabled");
+#endif
 
   Serial.println("ragnar-link-gateway: init esp-now");
   configure_espnow(espnow_channel);
