@@ -44,11 +44,12 @@ RagnarStatusPacket last_status = {};
 
 const uint8_t broadcast_peer[ESP_NOW_ETH_ALEN] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
 
-void on_data_sent(const uint8_t *, esp_now_send_status_t status);
 void handle_plain_serial_line(const String &line);
 #if ESP_IDF_VERSION_MAJOR >= 5
+void on_data_sent(const wifi_tx_info_t *, esp_now_send_status_t status);
 void on_data_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len);
 #else
+void on_data_sent(const uint8_t *, esp_now_send_status_t status);
 void on_data_recv(const uint8_t *mac, const uint8_t *data, int len);
 #endif
 
@@ -300,7 +301,7 @@ void handle_espnow_data(const uint8_t *mac, const uint8_t *data, int len) {
   (void)data;
 }
 
-void on_data_sent(const uint8_t *, esp_now_send_status_t status) {
+void handle_data_sent(esp_now_send_status_t status) {
   tx_callbacks++;
   if (status != ESP_NOW_SEND_SUCCESS) {
     tx_callback_failures++;
@@ -309,11 +310,19 @@ void on_data_sent(const uint8_t *, esp_now_send_status_t status) {
 }
 
 #if ESP_IDF_VERSION_MAJOR >= 5
+void on_data_sent(const wifi_tx_info_t *, esp_now_send_status_t status) {
+  handle_data_sent(status);
+}
+
 void on_data_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
   const uint8_t *mac = info != nullptr ? info->src_addr : nullptr;
   handle_espnow_data(mac, data, len);
 }
 #else
+void on_data_sent(const uint8_t *, esp_now_send_status_t status) {
+  handle_data_sent(status);
+}
+
 void on_data_recv(const uint8_t *mac, const uint8_t *data, int len) {
   handle_espnow_data(mac, data, len);
 }
