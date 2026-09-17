@@ -2,6 +2,7 @@
 #include <ArduinoJson.h>
 #include <WiFi.h>
 #include <esp_now.h>
+#include <esp_idf_version.h>
 #include <esp_wifi.h>
 
 #include "ragnar_link_protocol.h"
@@ -27,12 +28,36 @@ uint8_t espnow_channel = DEFAULT_CHANNEL;
 uint32_t tx_sequence = 0;
 uint32_t last_host_ms = 0;
 uint32_t last_display_ms = 0;
+uint32_t last_tx_ms = 0;
+volatile uint32_t last_rx_ms = 0;
 uint32_t sent_packets = 0;
 uint32_t send_failures = 0;
+volatile uint32_t tx_callbacks = 0;
+volatile uint32_t tx_callback_failures = 0;
+volatile uint32_t rx_packets = 0;
+volatile int last_rx_len = 0;
+volatile bool rx_event_pending = false;
+volatile bool tx_failure_pending = false;
 String last_message = "booting";
+uint8_t last_rx_mac[ESP_NOW_ETH_ALEN] = {0, 0, 0, 0, 0, 0};
 RagnarStatusPacket last_status = {};
 
 const uint8_t broadcast_peer[ESP_NOW_ETH_ALEN] = {0xff, 0xff, 0xff, 0xff, 0xff, 0xff};
+
+void on_data_sent(const uint8_t *, esp_now_send_status_t status);
+void handle_plain_serial_line(const String &line);
+#if ESP_IDF_VERSION_MAJOR >= 5
+void on_data_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len);
+#else
+void on_data_recv(const uint8_t *mac, const uint8_t *data, int len);
+#endif
+
+String mac_to_string(const uint8_t *mac) {
+  char text[18];
+  snprintf(text, sizeof(text), "%02X:%02X:%02X:%02X:%02X:%02X",
+           mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+  return String(text);
+}
 
 uint8_t map_ragnar_state(const char *value) {
   if (!value) return RAGNAR_STATE_UNKNOWN;
@@ -85,22 +110,29 @@ void draw_status() {
   tft.printf("Sent: %lu", static_cast<unsigned long>(sent_packets));
   tft.setCursor(8, 74);
   tft.printf("Fail: %lu", static_cast<unsigned long>(send_failures));
+  tft.setCursor(8, 90);
+  tft.printf("TXcb: %lu/%lu", static_cast<unsigned long>(tx_callbacks),
+             static_cast<unsigned long>(tx_callback_failures));
 
   bool host_ok = millis() - last_host_ms < HOST_TIMEOUT_MS;
   tft.setTextColor(host_ok ? TFT_GREEN : TFT_RED, TFT_BLACK);
-  tft.setCursor(8, 100);
+  tft.setCursor(8, 116);
   tft.print(host_ok ? "Host: OK" : "Host: waiting");
 
   tft.setTextColor(TFT_CYAN, TFT_BLACK);
-  tft.setCursor(8, 126);
-  tft.printf("Cams %u", last_status.camera_count);
   tft.setCursor(8, 142);
-  tft.printf("WiFi %u", last_status.wifi_count);
+  tft.printf("Cams %u", last_status.camera_count);
   tft.setCursor(8, 158);
+  tft.printf("WiFi %u", last_status.wifi_count);
+  tft.setCursor(8, 174);
   tft.printf("BLE  %u", last_status.ble_count);
 
+  tft.setTextColor(TFT_MAGENTA, TFT_BLACK);
+  tft.setCursor(8, 206);
+  tft.print("RX " + String(rx_packets) + " " + mac_to_string(last_rx_mac));
+
   tft.setTextColor(TFT_YELLOW, TFT_BLACK);
-  tft.setCursor(8, 190);
+  tft.setCursor(8, 238);
   tft.print(last_message.substring(0, 24));
 #endif
 }
@@ -112,16 +144,25 @@ void configure_espnow(uint8_t channel) {
   esp_wifi_set_channel(channel, WIFI_SECOND_CHAN_NONE);
   esp_wifi_set_promiscuous(false);
 
-  if (esp_now_init() != ESP_OK) {
-    last_message = "esp-now init failed";
+  esp_err_t init_result = esp_now_init();
+  if (init_result != ESP_OK) {
+    last_message = "esp-now init failed " + String(init_result);
     return;
   }
+
+  esp_now_register_send_cb(on_data_sent);
+  esp_now_register_recv_cb(on_data_recv);
 
   esp_now_peer_info_t peer = {};
   memcpy(peer.peer_addr, broadcast_peer, ESP_NOW_ETH_ALEN);
   peer.channel = channel;
   peer.encrypt = false;
-  esp_now_add_peer(&peer);
+  esp_err_t peer_result = esp_now_add_peer(&peer);
+  if (peer_result != ESP_OK && peer_result != ESP_ERR_ESPNOW_EXIST) {
+    last_message = "peer add failed " + String(peer_result);
+    return;
+  }
+  last_message = "radio ready ch " + String(channel);
 }
 
 void send_status_packet(JsonDocument &doc) {
@@ -144,6 +185,7 @@ void send_status_packet(JsonDocument &doc) {
   esp_err_t result = esp_now_send(broadcast_peer, reinterpret_cast<uint8_t *>(&packet), sizeof(packet));
   if (result == ESP_OK) {
     sent_packets++;
+    last_tx_ms = millis();
     last_status = packet;
     last_message = doc["message"] | "status sent";
     emit_json("ack", doc["seq"] | 0, "sent");
@@ -154,9 +196,34 @@ void send_status_packet(JsonDocument &doc) {
   }
 }
 
+void print_stats() {
+  StaticJsonDocument<384> doc;
+  doc["v"] = RAGNAR_LINK_VERSION;
+  doc["type"] = "event";
+  doc["event"] = "stats";
+  doc["mac"] = WiFi.macAddress();
+  doc["channel"] = espnow_channel;
+  doc["sent"] = sent_packets;
+  doc["send_failures"] = send_failures;
+  doc["tx_callbacks"] = tx_callbacks;
+  doc["tx_callback_failures"] = tx_callback_failures;
+  doc["rx_packets"] = rx_packets;
+  doc["last_rx_peer"] = mac_to_string(last_rx_mac);
+  doc["last_rx_len"] = last_rx_len;
+  doc["last_tx_ms"] = last_tx_ms;
+  doc["last_rx_ms"] = last_rx_ms;
+  doc["message"] = last_message;
+  serializeJson(doc, Serial);
+  Serial.println();
+}
+
 void handle_serial_line(String line) {
   line.trim();
   if (line.length() == 0) return;
+  if (!line.startsWith("{")) {
+    handle_plain_serial_line(line);
+    return;
+  }
 
   StaticJsonDocument<512> doc;
   DeserializationError error = deserializeJson(doc, line);
@@ -182,6 +249,9 @@ void handle_serial_line(String line) {
       esp_now_deinit();
       configure_espnow(espnow_channel);
       emit_json("ack", doc["seq"] | 0, "channel_set");
+    } else if (!strcmp(command, "stats")) {
+      print_stats();
+      emit_json("ack", doc["seq"] | 0, "stats");
     } else {
       emit_json("ack", doc["seq"] | 0, "unknown_command");
     }
@@ -191,6 +261,63 @@ void handle_serial_line(String line) {
     emit_json("ack", doc["seq"] | 0, "unknown_type");
   }
 }
+
+void handle_plain_serial_line(const String &line) {
+  if (line == "STATS" || line == "stats") {
+    print_stats();
+  } else if (line == "HELP" || line == "help") {
+    Serial.println("Ragnar Link Gateway commands:");
+    Serial.println("  STATS");
+  }
+}
+
+void process_radio_events() {
+  if (rx_event_pending) {
+    rx_event_pending = false;
+    String peer = mac_to_string(last_rx_mac);
+    last_message = "rx " + String(last_rx_len) + "B";
+    Serial.print("ragnar-link-gateway: rx ");
+    Serial.print(last_rx_len);
+    Serial.print(" bytes from ");
+    Serial.println(peer);
+  }
+
+  if (tx_failure_pending) {
+    tx_failure_pending = false;
+    last_message = "tx callback failed";
+    Serial.println("ragnar-link-gateway: tx callback failed");
+  }
+}
+
+void handle_espnow_data(const uint8_t *mac, const uint8_t *data, int len) {
+  rx_packets++;
+  last_rx_ms = millis();
+  last_rx_len = len;
+  if (mac != nullptr) {
+    memcpy(last_rx_mac, mac, ESP_NOW_ETH_ALEN);
+  }
+  rx_event_pending = true;
+  (void)data;
+}
+
+void on_data_sent(const uint8_t *, esp_now_send_status_t status) {
+  tx_callbacks++;
+  if (status != ESP_NOW_SEND_SUCCESS) {
+    tx_callback_failures++;
+    tx_failure_pending = true;
+  }
+}
+
+#if ESP_IDF_VERSION_MAJOR >= 5
+void on_data_recv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+  const uint8_t *mac = info != nullptr ? info->src_addr : nullptr;
+  handle_espnow_data(mac, data, len);
+}
+#else
+void on_data_recv(const uint8_t *mac, const uint8_t *data, int len) {
+  handle_espnow_data(mac, data, len);
+}
+#endif
 }  // namespace
 
 uint16_t ragnar_crc16_ccitt(const uint8_t *data, size_t len) {
@@ -234,13 +361,15 @@ void setup() {
 }
 
 void loop() {
+  process_radio_events();
+
   static String line;
   while (Serial.available()) {
     char c = static_cast<char>(Serial.read());
-    if (c == '\n') {
+    if (c == '\n' || c == '\r') {
       handle_serial_line(line);
       line = "";
-    } else if (c != '\r') {
+    } else {
       line += c;
       if (line.length() > 768) {
         line = "";

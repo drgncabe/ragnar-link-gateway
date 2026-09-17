@@ -42,6 +42,15 @@ Serial monitor:
 pio device monitor -b 115200
 ```
 
+Useful serial monitor commands:
+
+```text
+HELP
+STATS
+```
+
+`STATS` prints the gateway MAC, configured channel, ESP-NOW send count, ESP-NOW send callback count, callback failures, received packet count, and last received peer.
+
 If the monitor shows repeated `rst:0x3 (RTC_SW_SYS_RST)` boot messages and never prints `ragnar-link-gateway: boot`, erase the flash once and upload again:
 
 ```sh
@@ -70,3 +79,14 @@ The `ESP32-S3-LCD-1.47B` board uses `GPIO46` for LCD backlight. If you later dis
 ## Protocol
 
 The ESP-NOW packet contract is documented in [docs/espnow-protocol.md](docs/espnow-protocol.md). IRIS should treat that file and the matching host-side docs in `ragnar-link` as the v1 source of truth.
+
+## Link Debugging
+
+The v1 Ragnar Link radio path is one-way from the gateway to IRIS. The gateway cannot prove that IRIS received a broadcast unless IRIS sends its own packet back. The display and `STATS` command therefore separate the useful states:
+
+- `Sent` increments when the gateway queues a Ragnar status packet for ESP-NOW.
+- `TXcb` increments when ESP-NOW reports a transmit callback.
+- `TXcb` failures indicate the radio stack reported send failure.
+- `RX` increments only if IRIS, or another ESP-NOW device, sends anything back.
+
+If `Sent` and `TXcb` increment but IRIS remains stale, debug the IRIS receiver path: channel, packet parser, magic/version/type, packet length, and CRC.
